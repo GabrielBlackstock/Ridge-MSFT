@@ -1,0 +1,103 @@
+import yfinance as yf
+import pandas as pd
+import numpy as np
+from sklearn.linear_model import Ridge
+from sklearn.model_selection import GridSearchCV
+from sklearn.preprocessing import StandardScaler
+import matplotlib.pyplot as plt
+
+# Step 1: Data Collection
+# Fetch historical data for MSFT from Yahoo Finance
+start_date = "2015-01-01"
+end_date = "2024-04-26"  # Last trading day before April 28, 2024
+msft_data = yf.download("MSFT", start=start_date, end=end_date, interval="1d")
+
+# Step 2: Data Preprocessing
+# Clean and format the data
+msft_data["Date"] = msft_data.index
+msft_data.reset_index(drop=True, inplace=True)
+
+# Generate additional features for the regression model
+msft_data["MA20"] = msft_data["Close"].rolling(window=20).mean()  # 20-day moving average
+msft_data["VolMA20"] = msft_data["Volume"].rolling(window=20).mean()  # 20-day volume average
+
+# Drop any NaN values
+msft_data.dropna(inplace=True)
+
+# Select the features and target variable
+features = ["MA20", "VolMA20"]
+target = "Close"
+
+# Normalize the features
+scaler = StandardScaler()
+X_scaled = scaler.fit_transform(msft_data[features])
+
+# Step 3: Ridge Regression Model
+# Perform cross-validation to find the optimal lambda (regularization parameter)
+param_grid = {"alpha": np.logspace(-4, 4, 20)}
+ridge = Ridge()
+grid_search = GridSearchCV(ridge, param_grid, cv=5, scoring="neg_mean_squared_error")
+grid_search.fit(X_scaled, msft_data[target])
+
+# Get the best Ridge model from cross-validation
+best_ridge = grid_search.best_estimator_
+
+# Step 4: Backtesting
+# Predict the closing prices using the Ridge Regression model
+predictions = best_ridge.predict(X_scaled)
+msft_data["Predicted_Close"] = predictions
+
+# Implement a simple trading strategy
+msft_data["Buy_Signal"] = msft_data["Predicted_Close"] > msft_data["Close"].shift(1)
+
+# Calculate trading returns
+msft_data["Returns"] = msft_data["Close"].pct_change()
+msft_data["Strategy_Returns"] = msft_data["Returns"] * msft_data["Buy_Signal"].shift(1).fillna(0)
+
+# Step 5: Portfolio Management and Performance Metrics
+initial_portfolio_value = 1_000_000  # Initial portfolio value in pounds
+msft_data["Portfolio_Returns"] = msft_data["Strategy_Returns"] * initial_portfolio_value
+
+# Calculate cumulative portfolio returns
+msft_data["Cumulative_Portfolio_Value"] = initial_portfolio_value * (1 + msft_data["Strategy_Returns"]).cumprod()
+
+# Calculate Sharpe ratio
+risk_free_rate = 0.01  # Assume a 1% risk-free rate
+excess_returns = msft_data["Strategy_Returns"] - (risk_free_rate / 252)
+sharpe_ratio = np.sqrt(252) * np.mean(excess_returns) / np.std(excess_returns)
+
+# Calculate drawdowns
+msft_data["Cumulative_Max"] = msft_data["Cumulative_Portfolio_Value"].cummax()
+msft_data["Drawdown"] = msft_data["Cumulative_Max"] - msft_data["Cumulative_Portfolio_Value"]
+maximum_drawdown = msft_data["Drawdown"].max()
+
+# Portfolio value and ROI
+initial_cash = initial_portfolio_value
+final_portfolio_value = msft_data["Cumulative_Portfolio_Value"].iloc[-1]
+final_ROI = (final_portfolio_value - initial_cash) / initial_cash * 100
+
+# Output formatted performance metrics to the terminal
+formatted_initial_portfolio_value = f"£{initial_cash:,.2f}"
+formatted_final_portfolio_value = f"£{final_portfolio_value:,.2f}"
+formatted_final_ROI = f"{final_ROI:.2f}"
+
+print(f"Initial Portfolio Value: {formatted_initial_portfolio_value}")
+print(f"Final Portfolio Value: {formatted_final_portfolio_value}")
+print(f"ROI: {formatted_final_ROI}%")
+print(f"Sharpe Ratio: {sharpe_ratio:.2f}")
+
+# Plot cumulative portfolio returns
+plt.plot(msft_data["Date"], msft_data["Cumulative_Portfolio_Value"], label="Cumulative Portfolio Value")
+plt.xlabel("Date")
+plt.ylabel("Portfolio Value (£)")
+plt.title("Backtesting Strategy: Cumulative Portfolio Value")
+plt.legend()
+plt.show()
+
+# Plot drawdowns
+plt.plot(msft_data["Date"], msft_data["Drawdown"], label="Drawdowns")
+plt.xlabel("Date")
+plt.ylabel("Drawdown (£)")
+plt.title("Backtesting Strategy: Drawdowns")
+plt.legend()
+plt.show()
